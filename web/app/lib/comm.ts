@@ -4,21 +4,21 @@ function blobToBase64(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
 
-    // 读取完成后的处理  
+    // 读取完成后的处理
     reader.onloadend = function () {
-      // 读取成功，result属性中将包含一个data: URL格式的字符串  
-      // 通过split(',')来提取Base64编码的字符串  
+      // 读取成功，result属性中将包含一个data: URL格式的字符串
+      // 通过split(',')来提取Base64编码的字符串
       const base64data = reader.result as string;
       const base64String = base64data.split(',')[1];
       resolve(base64String);
     };
 
-    // 错误处理  
+    // 错误处理
     reader.onerror = function (error) {
       reject(error);
     };
 
-    // 读取Blob对象，并作为data URL返回  
+    // 读取Blob对象，并作为data URL返回
     reader.readAsDataURL(blob);
   });
 }
@@ -107,15 +107,35 @@ export class Comm {
       const reader = await API.agent_infer_streaming_api(data, engine, conversationId, settings);
       const decoder = new TextDecoder("utf-8");
       let index = 0;
+      let buffer = ""; // 缓冲区，用于存储未完成的部分
       while (true) {
-        const { value, done } = await reader.read(); 
+        const { value, done } = await reader.read();
         if (done) {
           callbackEnd(index);
           break;
         }
         const chunk = decoder.decode(value, { stream: true });
-        callbackProcessing(index, chunk);
-        index++;
+        buffer += chunk;
+
+        // 处理按行拆分
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || ""; // 把未完成的部分留在缓冲区中
+        // 按行解析并触发回调
+        lines.forEach((line) => {
+          // 检查是否是有效的 `data:` 行
+          if (line.startsWith("data:")) {
+            const data = line.replace(/^data:\s*/, "");
+            try {
+              const parsedData = JSON.parse(data);
+              callbackProcessing(index, parsedData.answer); // 调用处理回调
+              index++; // 增加索引
+            } catch (error) {
+              console.error("JSON解析失败:", error);
+            }
+          }
+        });
+        // callbackProcessing(index, chunk);
+        // index++;
       }
       reader.releaseLock();
     } catch (error) {
@@ -155,7 +175,7 @@ export class Comm {
     // 处理tts输入数据
     const filterData = (data: string): string => {
       // 过滤所有的emoji
-      const regex = /[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{2700}-\u{27BF}\u{1F1E0}-\u{1F1FF}]/gu;  
+      const regex = /[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{2700}-\u{27BF}\u{1F1E0}-\u{1F1FF}]/gu;
       data = data.replace(regex, '');
       return data
     }

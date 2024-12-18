@@ -30,7 +30,7 @@ export default function Chatbot(props: { showChatHistory: boolean }) {
     const [isProcessing, setIsProcessing] = useState(false);
     const inputRef = useRef<HTMLInputElement>(null);
     const chatbotRef = useRef<HTMLDivElement>(null);
-    
+
     useEffect(() => {
         let newSettings: {[key: string]: string} = {}
         if (agentEngine in agentSettings) {
@@ -49,83 +49,100 @@ export default function Chatbot(props: { showChatHistory: boolean }) {
     const chatWithAI = (message: string) => {
         console.log("chatWithAI: ", message);
         addChatRecord({ role: ChatRole.HUMAN, content: message });
-        // 请求AI
+
         let responseText = "";
         let audioText = "";
-        // 保证顺序执行
         let audioRecorderIndex = 0;
         let audioRecorderDict = new Map<number, ArrayBuffer>();
+        let processingTTS = false; // 避免并发TTS
+        const ttsQueue: string[] = []; // 异步任务队列
+
+        const MAX_RETRIES = 3;
+        const RETRY_DELAY = 1000;
+
         addChatRecord({ role: ChatRole.AI, content: AI_THINK_MESSAGE });
+
         if (audioAutoStop) {
             CharacterManager.getInstance().clearAudioQueue();
         }
+
+        // 封装TTS重试逻辑
+        const retryTTS = (text: string, attempt: number = 0): Promise<void> => {
+            return Comm.getInstance().tts(text, settings).then(
+                (data: ArrayBuffer) => {
+                    if (data) {
+                        audioRecorderDict.set(audioRecorderIndex, data);
+                        while (audioRecorderDict.has(audioRecorderIndex)) {
+                            CharacterManager.getInstance().pushAudioQueue(audioRecorderDict.get(audioRecorderIndex)!);
+                            audioRecorderDict.delete(audioRecorderIndex);
+                            audioRecorderIndex++;
+                        }
+                    }
+                }
+            ).catch((error) => {
+                if (attempt < MAX_RETRIES) {
+                    console.warn(`TTS重试(${attempt + 1}/${MAX_RETRIES})...`);
+                    return new Promise((resolve) => setTimeout(resolve, RETRY_DELAY))
+                        .then(() => retryTTS(text, attempt + 1));
+                } else {
+                    console.error("TTS重试失败：", error);
+                }
+            });
+        };
+
+        // 异步任务处理队列
+        const processTTSQueue = async () => {
+            if (processingTTS) return;
+            processingTTS = true;
+
+            while (ttsQueue.length > 0) {
+                const sentence = ttsQueue.shift()!;
+                console.log("TTS:", sentence);
+                await retryTTS(sentence);
+            }
+
+            processingTTS = false;
+        };
+
+        // 处理音频文本，提取完整句子
+        const processAudioText = () => {
+            let punc = ["。", "？", "?", "！", "!", "；", ";"];
+            let lastPuncIndex = -1;
+
+            for (let i = 0; i < punc.length; i++) {
+                let index = audioText.lastIndexOf(punc[i]);
+                if (index > lastPuncIndex) {
+                    lastPuncIndex = index;
+                }
+            }
+
+            if (lastPuncIndex !== -1) {
+                let sentence = audioText.slice(0, lastPuncIndex + 1); // 提取完整句子
+                audioText = audioText.slice(lastPuncIndex + 1); // 剔除已处理部分
+                ttsQueue.push(sentence); // 加入队列
+                processTTSQueue(); // 处理队列
+            }
+        };
+
+        // 处理流式输出
         Comm.getInstance().streamingChat(message, agentEngine, conversationId, settings, (index: number, data: string) => {
             responseText += data;
             updateLastRecord({ role: ChatRole.AI, content: responseText });
+
             if (!mute && mode != InteractionMode.CHATBOT) {
-                // 按照标点符号断句处理
-                audioText += data;
-                // 断句判断符号
-                // let punc = ["。", ".", "！", "!", "？", "?", "；", ";", "，", ",", "(", ")", "（", "）"];
-                let punc = ["。", ".", "？", "?", "；", ";", "，", ","];
-                // 找到最后一个包含这些符号的位置
-                let lastPuncIndex = -1;
-                for (let i = 0; i < punc.length; i++) {
-                    let index = audioText.lastIndexOf(punc[i]);
-                    if (index > lastPuncIndex) {
-                        // 防止需要连续的符号断句
-                        let firstPart = audioText.slice(0, index + 1);
-                        if (firstPart.split("(").length - firstPart.split(")").length != 0) {
-                            break;
-                        }
-                        if (firstPart.split("[").length - firstPart.split("]").length != 0) {
-                            break;
-                        }
-                        lastPuncIndex = index;
-                        break;
-                    }
-                }
-                if (lastPuncIndex !== -1) {
-                    let firstPart = audioText.slice(0, lastPuncIndex + 1);
-                    let secondPart = audioText.slice(lastPuncIndex + 1);
-                    console.log("tts:", firstPart);
-                    Comm.getInstance().tts(firstPart, settings).then(
-                        (data: ArrayBuffer) => {
-                            if (data) {
-                                audioRecorderDict.set(index, data);
-                                while (true) {
-                                    if (!audioRecorderDict.has(audioRecorderIndex)) break;
-                                    CharacterManager.getInstance().pushAudioQueue(audioRecorderDict.get(audioRecorderIndex)!);
-                                    audioRecorderIndex++;
-                                }
-                            }
-                        }
-                    )
-                    audioText = secondPart;
-                } else {
-                    audioRecorderDict.set(index, null)
-                }
+                audioText += data; // 累加文本
+                processAudioText(); // 提取完整句子
             }
         }, (index: number) => {
-            // 处理剩余tts
             if (!mute && audioText) {
-                console.log("tts:", audioText);
-                Comm.getInstance().tts(audioText, settings).then(
-                    (data: ArrayBuffer) => {
-                        if (data) {
-                            audioRecorderDict.set(index, data);
-                            while (true) {
-                                if (!audioRecorderDict.has(audioRecorderIndex)) break;
-                                CharacterManager.getInstance().pushAudioQueue(audioRecorderDict.get(audioRecorderIndex)!);
-                                audioRecorderIndex++;
-                            }
-                        }
-                    }
-                )
+                console.log("TTS (剩余):", audioText);
+                ttsQueue.push(audioText); // 处理剩余的文本
+                audioText = "";
+                processTTSQueue();
             }
-            setIsProcessing(false);
+            setIsProcessing(false); // 标记结束
         });
-    }
+    };
 
 
     const micClick = () => {
@@ -190,16 +207,16 @@ export default function Chatbot(props: { showChatHistory: boolean }) {
         }
     }
 
-    // 定义一个防抖函数，用于处理 Ctrl + M 的按键组合  
+    // 定义一个防抖函数，用于处理 Ctrl + M 的按键组合
     const handleCtrlM = debounce(() => {
         console.log('Ctrl + M was pressed!');
         micClick();
-    }, 500); // 1000 毫秒内多次触发只执行一次   
+    }, 500); // 1000 毫秒内多次触发只执行一次
 
     useEffect(() => {
         // 聊天滚动条到底部
         chatbotRef.current.scrollTop = chatbotRef.current.scrollHeight + 100;
-        // 添加事件监听器  
+        // 添加事件监听器
         const handleKeyDown = (event: KeyboardEvent) => {
             // 检查是否按下了 Ctrl + M
             if (event.ctrlKey && event.key === 'm') {
@@ -207,9 +224,9 @@ export default function Chatbot(props: { showChatHistory: boolean }) {
             }
         };
 
-        // 绑定事件监听器到 document 或其他适当的 DOM 元素  
+        // 绑定事件监听器到 document 或其他适当的 DOM 元素
         document.addEventListener('keydown', handleKeyDown);
-        // 清理函数，用于移除事件监听器  
+        // 清理函数，用于移除事件监听器
         return () => {
             document.removeEventListener('keydown', handleKeyDown);
         };

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 '''
 @File    :   difyAgnet.py
-@Author  :   一力辉 
+@Author  :   一力辉
 '''
 
 from ..builder import AGENTS
@@ -56,7 +56,7 @@ class DifyAgent(BaseAgent):
                         if not chunkStr: continue
                         chunkData = pattern.search(chunkStr)
                         # 部分dify返回不完整，该模板匹配会失效
-                        if not chunkStr.endswith('}') or not chunkData: 
+                        if not chunkStr.endswith('}') or not chunkData:
                             logger.warning(f"[AGENT] Engine return truncated data: {chunkStr}")
                             continue
                         chunkData = chunkData.group(1)
@@ -82,8 +82,8 @@ class DifyAgent(BaseAgent):
             return ""
 
     async def run(
-        self, 
-        input: Union[TextMessage, AudioMessage], 
+        self,
+        input: Union[TextMessage, AudioMessage],
         streaming: bool,
         **kwargs
     ):
@@ -121,7 +121,7 @@ class DifyAgent(BaseAgent):
                         if not chunkStr: continue
                         chunkData = pattern.search(chunkStr)
                         # 部分dify返回不完整，该模板匹配会失效
-                        if not chunkStr.endswith('}') or not chunkData: 
+                        if not chunkStr.endswith('}') or not chunkData:
                             logger.warning(f"[AGENT] Engine return truncated data: {chunkStr}")
                             continue
                         chunkData = chunkData.group(1)
@@ -132,7 +132,12 @@ class DifyAgent(BaseAgent):
                             if "message" in data["event"]:
                                 if 'answer' in data:
                                     logger.debug(f"[AGENT] Engine response: {data}")
-                                    yield data['answer']
+                                    # yield data['answer']
+                                    json_data = json.dumps({
+                                        "event": "message",
+                                        "answer": data['answer']
+                                    })
+                                    yield f"data: {json_data}\n\n"
                         except Exception as e:
                             logger.error(f"[AGENT] Engine run failed: {e}", exc_info=True)
                             yield "内部错误，请检查dify信息。"
